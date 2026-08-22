@@ -1,0 +1,47 @@
+{
+  "name": "dicechess-bot-typescript",
+  "version": "1.0.0",
+  "description": "Dependency-free TypeScript starter for Dice Chess bots (Azure Functions & Node.js HTTP server).",
+  "type": "module",
+  "main": "dist/functions/*.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fortemate/dicechess-bot-typescript.git"
+  },
+  "homepage": "https://fortemate.com",
+  "bugs": {
+    "url": "https://github.com/fortemate/dicechess-bot-typescript/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "tsx src/bot.ts",
+    "webhook": "tsx src/webhook-server.ts",
+    "claim-identity": "tsx src/claim-identity.ts",
+    "register": "tsx src/register.ts",
+    "ladder:join": "tsx src/join-ladder.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/webhook.test.ts src/strategy.test.ts",
+    "func:start": "func start"
+  },
+  "keywords": [
+    "dicechess",
+    "chess",
+    "bot",
+    "typescript",
+    "starter-template",
+    "azure-functions"
+  ],
+  "author": "Jegors Čemisovs",
+  "license": "MIT",
+  "dependencies": {
+    "@azure/functions": "^4.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}

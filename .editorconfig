@@ -1,0 +1,27 @@
+# https://editorconfig.org
+root = true
+
+# Universal default rules applied to all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# 2-space indentation standard for TypeScript, JavaScript, JSON, YAML
+[*.{ts,tsx,js,jsx,mjs,cjs,json,yaml,yml,html,css}]
+indent_style = space
+indent_size = 2
+
+# Markdown specific settings
+[*.{md,mdx}]
+trim_trailing_whitespace = false
+
+# Lock Files
+[**/{package-lock.json,yarn.lock,pnpm-lock.yaml}]
+max_line_length = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset
+end_of_line = unset
+insert_final_newline = unset

@@ -1,0 +1,33 @@
+name: 'Enforce PR Policy'
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - name: Validate branch name and PR description
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            const body = context.payload.pull_request.body || '';
+            const branchPattern = /^(feat|fix|bug|task|refactor|chore|docs|ci|test|perf|feature)\/(issue-)?(\d+)-.+$/;
+            const nonIssuePattern = /^(feat|fix|bug|task|refactor|chore|docs|ci|test|perf|feature)\/.+$/;
+
+            if (!nonIssuePattern.test(branch)) {
+              core.setFailed(`Branch name "${branch}" does not match required format: <type>/<short-desc> or <type>/<id>-<short-desc>`);
+              return;
+            }
+
+            const match = branch.match(branchPattern);
+            if (match) {
+              const issueId = match[3];
+              const closesPattern = new RegExp(`(closes|fixes|resolves)\\s+#${issueId}\\b`, 'i');
+              if (!closesPattern.test(body)) {
+                core.setFailed(`Branch "${branch}" references issue #${issueId}, but PR description does not contain "Closes #${issueId}".`);
+              }
+            }
