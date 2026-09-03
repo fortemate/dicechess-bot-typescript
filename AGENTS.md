@@ -6,7 +6,7 @@
 - **Runtimes**: Standalone polling bot, Node.js HTTP webhook server, or Azure Functions v4 serverless handler.
 
 ## Developer Workflows
-- **Setup**: `npm install` (Node.js 18+, Node 26 recommended).
+- **Setup**: `npm install` (Node.js 20+, Node 26 recommended).
 - **Tests**: `npm test` (runs Node.js test runner against `webhook.test.ts` and `strategy.test.ts`).
 - **Typecheck**: `npm run typecheck` (`tsc --noEmit`).
 - **Build**: `npm run build` (`tsc`).

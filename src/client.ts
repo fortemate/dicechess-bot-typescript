@@ -1,7 +1,7 @@
 /**
  * Thin, dependency-free transport client for the Dice Chess Bot API.
  *
- * Uses the built-in `fetch` (Node 18+) — no runtime dependencies. It wraps auth, the
+ * Uses the built-in `fetch` (Node 20+) — no runtime dependencies. It wraps auth, the
  * REST endpoints, and the resilience patterns a real bot needs (retry with backoff,
  * `Retry-After` handling, and a hook to refresh the token on `401`). Game logic stays
  * out of here: your bot picks moves; this client just moves bytes.

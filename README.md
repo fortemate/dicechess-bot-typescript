@@ -30,7 +30,7 @@ minted anonymous identity bot:team:anon:typescript-starter-…
 game 147ea30e: played g1h3 (v3)
 ```
 
-Requires Node 18+ (Node 24/26 recommended).
+Requires Node 20+ (Node 24/26 recommended).
 
 ## Make it yours
 

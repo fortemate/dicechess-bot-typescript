@@ -14,7 +14,7 @@ few dozen games) — with no server of your own to operate in the meantime.
 - An Azure subscription.
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) (`az`), logged in (`az login`).
 - [Azure Functions Core Tools v4](https://learn.microsoft.com/azure/azure-functions/functions-run-local) (`func`).
-- Node 18+ locally (for `npm install` / `npm run build`).
+- Node 20+ locally (for `npm install` / `npm run build`).
 
 :::note[Dormant or brand-new subscription?]
 If `az storage account create` (or any resource creation) fails with

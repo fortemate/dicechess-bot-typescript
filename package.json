@@ -13,7 +13,7 @@
     "url": "https://github.com/fortemate/dicechess-bot-typescript/issues"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "start": "tsx src/bot.ts",
