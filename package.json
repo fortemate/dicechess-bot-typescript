@@ -37,7 +37,7 @@
   "author": "Jegors Čemisovs",
   "license": "MIT",
   "dependencies": {
-    "@azure/functions": "^4.6.1"
+    "@azure/functions": "^4.16.5"
   },
   "devDependencies": {
     "@types/node": "^26.6.1",
