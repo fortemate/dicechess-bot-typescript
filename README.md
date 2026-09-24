@@ -97,6 +97,8 @@ The old `POST /bot/webhook` registration helper was removed: it uses an unsigned
 nonce handshake that the shared runtime intentionally rejects. Use the owner's
 staged webhook setup and signed verification v2 to activate a callback. This PR
 does not register or deploy a bot.
+The signed, versionless wake probe sent after activation is accepted for readiness;
+unsigned registration remains rejected.
 
 ### Azure Functions (ready-made adapter)
 

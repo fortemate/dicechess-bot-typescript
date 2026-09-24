@@ -22,6 +22,8 @@ export function toStrategyContext(context: RuntimeTurnContext): TurnContext {
 export function createBotWebhookHandler(options: TransportOptions): (request: Request) => Promise<Response> {
 	return createWebhookHandler({
 		...options,
+		// The owner server sends a signed, versionless wake probe after v2 activation.
+		allowLegacyReadiness: true,
 		strategy: {
 			async onTurn(context) {
 				return { moves: await chooseMove(toStrategyContext(context)) };
@@ -34,8 +36,8 @@ let cached: { configuration: string; handler: (request: Request) => Promise<Resp
 
 /** Read configuration at call time so Azure App Setting rotation creates a fresh handler. */
 export function configuredWebhookHandler(): (request: Request) => Promise<Response> {
-	const active = process.env.DICECHESS_WEBHOOK_SECRET;
-	const pending = process.env.DICECHESS_WEBHOOK_PENDING_KEY;
+	const active = process.env.DICECHESS_WEBHOOK_SECRET || undefined;
+	const pending = process.env.DICECHESS_WEBHOOK_PENDING_KEY || undefined;
 	const limitsText = process.env.DICECHESS_WEBHOOK_LIMITS;
 	const baseUrl = process.env.DICECHESS_BASE_URL ?? DEFAULT_BASE_URL;
 	if ((!active && !pending) || !limitsText) throw new Error('Webhook keys and DICECHESS_WEBHOOK_LIMITS must be configured');

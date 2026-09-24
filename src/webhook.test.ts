@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createNodeListener } from '@fortemate/dicechess-bot-runtime/node';
 import type { HttpRequest } from '@azure/functions';
-import { createBotWebhookHandler, toStrategyContext } from './webhook.js';
+import { configuredWebhookHandler, createBotWebhookHandler, toStrategyContext } from './webhook.js';
 import { handleAzureWebhook } from './functions/webhook.js';
 
 const active = 'synthetic-active-key';
@@ -69,6 +69,17 @@ test('bad signature and unsigned legacy registration cannot dispatch the strateg
 	assert.equal(legacy.status, 401);
 });
 
+test('signed versionless wake probe is accepted without allowing unsigned registration', async () => {
+	const raw = JSON.stringify({ type: 'verification', nonce: 'wake-nonce' });
+	const runtime = handler();
+	const result = await runtime(delivery(raw));
+	assert.equal(result.status, 200);
+	assert.deepEqual(await result.json(), { nonce: 'wake-nonce' });
+	assert.equal((await runtime(new Request('https://bot.invalid/webhook', {
+		method: 'POST', body: raw,
+	}))).status, 401);
+});
+
 test('pending key completes signed verification v2 and active key cannot impersonate it', async () => {
 	const nonce = Buffer.alloc(16, 1).toString('base64url');
 	const raw = JSON.stringify({ type: 'verification', version: 2, bot: { team: 'demo', name: 'starter' }, setupId: 'whs_test', revision: 'whrev_test', nonce });
@@ -88,6 +99,37 @@ test('runtime context maps seat-relative clock to the polling strategy shape', (
 		legalMoves, mayOfferDraw: false,
 		clock: { remainingMillis: 23000, opponentRemainingMillis: 12000, incrementMillis: 2000 },
 	}), { dfen: 'synthetic dfen', legalMoves, activeSeat: 'Black', clocks: { white: 12000, black: 23000 } });
+});
+
+test('empty active key is treated as unset when a pending key is configured', async () => {
+	const previousSecret = process.env.DICECHESS_WEBHOOK_SECRET;
+	const previousPending = process.env.DICECHESS_WEBHOOK_PENDING_KEY;
+	const previousLimits = process.env.DICECHESS_WEBHOOK_LIMITS;
+	try {
+		process.env.DICECHESS_WEBHOOK_SECRET = '';
+		process.env.DICECHESS_WEBHOOK_PENDING_KEY = pending;
+		process.env.DICECHESS_WEBHOOK_LIMITS = JSON.stringify(limits);
+		const raw = JSON.stringify({ type: 'verification', nonce: 'pending-wake' });
+		const currentStamp = String(Math.floor(Date.now() / 1000));
+		const request = new Request('https://bot.invalid/webhook', {
+			method: 'POST',
+			headers: {
+				'x-dicechess-timestamp': currentStamp,
+				'x-dicechess-signature': createHmac('sha256', pending).update(`${currentStamp}.${raw}`).digest('hex'),
+			},
+			body: raw,
+		});
+		const result = await configuredWebhookHandler()(request);
+		assert.equal(result.status, 200);
+		assert.deepEqual(await result.json(), { nonce: 'pending-wake' });
+	} finally {
+		if (previousSecret === undefined) delete process.env.DICECHESS_WEBHOOK_SECRET;
+		else process.env.DICECHESS_WEBHOOK_SECRET = previousSecret;
+		if (previousPending === undefined) delete process.env.DICECHESS_WEBHOOK_PENDING_KEY;
+		else process.env.DICECHESS_WEBHOOK_PENDING_KEY = previousPending;
+		if (previousLimits === undefined) delete process.env.DICECHESS_WEBHOOK_LIMITS;
+		else process.env.DICECHESS_WEBHOOK_LIMITS = previousLimits;
+	}
 });
 
 test('Node HTTP adapter preserves signed request bytes and runtime response', async () => {
