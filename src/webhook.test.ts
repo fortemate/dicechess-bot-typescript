@@ -124,11 +124,35 @@ test('Azure adapter preserves signed request bytes and returns the runtime respo
 			headers: new Headers({ 'x-dicechess-timestamp': currentStamp,
 				'x-dicechess-signature': createHmac('sha256', active)
 					.update(`${currentStamp}.${raw}`).digest('hex') }),
-			arrayBuffer: async () => new TextEncoder().encode(raw).buffer,
+			body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(raw)); controller.close(); } }),
 		} as unknown as HttpRequest;
 		const result = await handleAzureWebhook(request, { warn: () => {} });
 		assert.equal(result.status, 200);
 		assert.deepEqual(JSON.parse(result.body as string), { moves: ['e2e3'] });
+	} finally {
+		if (previousSecret === undefined) delete process.env.DICECHESS_WEBHOOK_SECRET;
+		else process.env.DICECHESS_WEBHOOK_SECRET = previousSecret;
+		if (previousLimits === undefined) delete process.env.DICECHESS_WEBHOOK_LIMITS;
+		else process.env.DICECHESS_WEBHOOK_LIMITS = previousLimits;
+	}
+});
+
+test('Azure adapter applies the runtime body limit while streaming', async () => {
+	const previousSecret = process.env.DICECHESS_WEBHOOK_SECRET;
+	const previousLimits = process.env.DICECHESS_WEBHOOK_LIMITS;
+	try {
+		process.env.DICECHESS_WEBHOOK_SECRET = active;
+		process.env.DICECHESS_WEBHOOK_LIMITS = JSON.stringify({ ...limits, maxBodyBytes: 10 });
+		const raw = turn({ e2e3: {} });
+		const currentStamp = String(Math.floor(Date.now() / 1000));
+		const request = {
+			url: 'https://bot.invalid/api/webhook', method: 'POST',
+			headers: new Headers({ 'x-dicechess-timestamp': currentStamp,
+				'x-dicechess-signature': createHmac('sha256', active).update(`${currentStamp}.${raw}`).digest('hex') }),
+			body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(raw)); controller.close(); } }),
+		} as unknown as HttpRequest;
+		const result = await handleAzureWebhook(request, { warn: () => {} });
+		assert.equal(result.status, 413);
 	} finally {
 		if (previousSecret === undefined) delete process.env.DICECHESS_WEBHOOK_SECRET;
 		else process.env.DICECHESS_WEBHOOK_SECRET = previousSecret;

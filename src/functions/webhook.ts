@@ -5,11 +5,12 @@ import { configuredWebhookHandler } from '../webhook.js';
 
 export async function handleAzureWebhook(request: HttpRequest, context: Pick<InvocationContext, 'warn'>): Promise<HttpResponseInit> {
 	try {
-		// Preserve raw bytes for the runtime's HMAC check.
+		// Stream the original bytes so the runtime enforces its body limit before buffering.
 		const input = new Request(request.url, {
 			method: request.method,
 			headers: request.headers,
-			body: await request.arrayBuffer(),
+			body: request.body,
+			duplex: 'half',
 		});
 		const response = await configuredWebhookHandler()(input);
 		return {
