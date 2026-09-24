@@ -9,9 +9,12 @@ type TransportOptions = Omit<WebhookHandlerOptions, 'strategy'>;
 /** Translate the runtime's seat-relative clock into the starter's two-sided view. */
 export function toStrategyContext(context: RuntimeTurnContext): TurnContext {
 	if (context.legalMoves === null) throw new Error('Legal moves are unavailable');
-	const clocks = context.clock === null ? null : context.seat === 'White'
-		? { white: context.clock.remainingMillis, black: context.clock.opponentRemainingMillis }
-		: { white: context.clock.opponentRemainingMillis, black: context.clock.remainingMillis };
+	let clocks: TurnContext['clocks'] = null;
+	if (context.clock !== null) {
+		clocks = context.seat === 'White'
+			? { white: context.clock.remainingMillis, black: context.clock.opponentRemainingMillis }
+			: { white: context.clock.opponentRemainingMillis, black: context.clock.remainingMillis };
+	}
 	return { dfen: context.dfen, legalMoves: context.legalMoves, activeSeat: context.seat, clocks };
 }
 
