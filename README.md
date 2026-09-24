@@ -5,8 +5,9 @@
 [![Leaderboard](https://img.shields.io/badge/Ladder-Leaderboard-1E90FF)](https://fortemate.com/leaderboard)
 [![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)](./LICENSE)
 
-A complete, **runnable** Dice Chess bot in TypeScript with **zero runtime
-dependencies** (built-in `fetch`). It mints an anonymous identity, challenges the
+A complete, **runnable** Dice Chess bot in TypeScript. The polling client uses
+built-in `fetch`; webhooks use the published `@fortemate/dicechess-bot-runtime`.
+It mints an anonymous identity, challenges the
 house sparring bot, and plays full games by walking the legal-move tree the server
 sends each turn — so **you never implement a single rule of the variant.**
 
@@ -30,15 +31,15 @@ minted anonymous identity bot:team:anon:typescript-starter-…
 game 147ea30e: played g1h3 (v3)
 ```
 
-Requires Node 20+ (Node 24/26 recommended).
+Requires Node 22.23.3, 24.21.0, or 26.8.2 (or a newer patch release within those major versions).
 
 ## Make it yours
 
 The only decision the bot makes is in **`chooseMove`** (`src/strategy.ts`) — the baseline
 ignores the position entirely and walks a random root-to-leaf path of the legal-move tree.
 Replace it with real evaluation and time management; everything else (auth, discovery, the
-activity loop, retries) is transport you can leave alone. Both the poll bot and the webhook
-handler build the same `TurnContext` and share this one function.
+activity loop, retries) is transport you can leave alone. The poll bot and webhook
+adapter both call this same function.
 
 ```ts
 interface TurnContext {
@@ -75,30 +76,34 @@ async function chooseMove(ctx: TurnContext): Promise<string[]> {
 
 ## Serverless: webhook mode
 
-Instead of polling, you can run as a **webhook**: register one HTTPS callback and the server
-POSTs when it's your turn — your HTTP response body is the move. The handler is stateless (it
-needs only the signing secret, never a token), so it drops into a cloud function.
+Instead of polling, you can run as a **webhook**: the server POSTs when it's your turn,
+and the HTTP response body is your move. `src/webhook.ts` configures the shared runtime's
+signed verification and turn handler. The strategy remains `chooseMove`.
 
 ```bash
-# 1. Deploy the handler at a public HTTPS URL, then register it (needs a REGISTERED token):
-DICECHESS_TOKEN=<registered-token> npm run register -- https://your-url/
-#    → prints DICECHESS_WEBHOOK_SECRET=…
-
-# 2. Run the handler with that secret:
-DICECHESS_WEBHOOK_SECRET=<secret> npm run webhook
+# Supply the active and/or pending key plus all seven runtime limits, then start:
+DICECHESS_WEBHOOK_SECRET=<active-key> DICECHESS_WEBHOOK_LIMITS='<limits-json>' npm run webhook
 ```
 
-For local testing, expose it with a tunnel (`cloudflared tunnel --url http://localhost:8080`)
-and register the tunnel URL. To deploy to AWS Lambda / Cloudflare Workers, call `handleDelivery`
-(`src/webhook.ts`) from your platform's request handler — it is pure and verifies the HMAC
-signature for you, then builds the same `TurnContext` as the poll bot (position, legal moves,
-your seat, clocks) and calls the same `chooseMove`.
+`DICECHESS_WEBHOOK_LIMITS` is a JSON object with positive integer `timeoutMs`,
+`maxBodyBytes`, `maxTreeNodes`, `maxTreeDepth`, `maxConcurrentRequests`,
+`maxCacheEntries`, and `cacheTtlMs`. Choose limits appropriate to your deployment.
+For an initial staged setup, set `DICECHESS_WEBHOOK_PENDING_KEY` to its candidate key
+before activation. Once activated, set `DICECHESS_WEBHOOK_SECRET` to the active key;
+keep a pending key only during a rotation. `DICECHESS_BASE_URL` controls fallback
+legal-tree retrieval. See [the runtime protocol](https://github.com/fortemate/dicechess-bot-runtime-js/blob/main/docs/protocol.md).
+
+The old `POST /bot/webhook` registration helper was removed: it uses an unsigned
+nonce handshake that the shared runtime intentionally rejects. Use the owner's
+staged webhook setup and signed verification v2 to activate a callback. This PR
+does not register or deploy a bot.
+The signed, versionless wake probe sent after activation is accepted for readiness;
+unsigned registration remains rejected.
 
 ### Azure Functions (ready-made adapter)
 
-`src/functions/webhook.ts` wraps `handleDelivery` in the Azure Functions v4 programming
-model — no adapter code to write. **[See `AZURE.md`](./AZURE.md) for the full walkthrough**:
-create the Function App, deploy, register, and join the ladder, end to end.
+`src/functions/webhook.ts` adapts Azure Functions v4 requests to the same runtime.
+**[See `AZURE.md`](./AZURE.md)** for setup requirements.
 
 ## What's inside
 
@@ -107,9 +112,9 @@ create the Function App, deploy, register, and join the ladder, end to end.
 | `src/bot.ts` | The runnable poll-only bot; picks moves via `chooseMove`. |
 | `src/strategy.ts` | `TurnContext` + `chooseMove` — the one decision the bot makes. **Edit this** (shared by both modes). |
 | `src/client.ts` | Thin transport client: auth, REST calls, retry/backoff, `Retry-After`, 401 re-mint. |
-| `src/webhook-server.ts` · `src/register.ts` | Plain Node.js webhook handler and one-time registration helper. |
+| `src/webhook-server.ts` | Node.js HTTP adapter for the shared runtime. |
 | `src/functions/webhook.ts` | Azure Functions v4 adapter — same logic, Azure's request/response shape. See `AZURE.md`. |
-| `src/webhook.ts` | Pure delivery logic: HMAC verification + move selection (reuse it in any function runtime). |
+| `src/webhook.ts` | Runtime configuration and strategy adapter; authenticated delivery lives in the published package. |
 | `src/claim-identity.ts` · `src/join-ladder.ts` | Claim a durable identity, then opt into the rating ladder. |
 
 ## Connection modes

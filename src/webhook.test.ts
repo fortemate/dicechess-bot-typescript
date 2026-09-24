@@ -1,90 +1,204 @@
-/**
- * Hermetic tests for the webhook handler — no network, no live server. The signature is computed
- * exactly as the server does — HMAC-SHA256(secret, "<ts>.<body>") — so a passing test proves the
- * handler would accept a genuine delivery and reject a forged one.
- */
-
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
-import { SIGNATURE_HEADER, TIMESTAMP_HEADER, contextFromEnvelope, handleDelivery, verifySignature } from './webhook.js';
-import type { MoveTree } from './client.js';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { createNodeListener } from '@fortemate/dicechess-bot-runtime/node';
+import type { HttpRequest } from '@azure/functions';
+import { configuredWebhookHandler, createBotWebhookHandler, toStrategyContext } from './webhook.js';
+import { handleAzureWebhook } from './functions/webhook.js';
 
-const SECRET = 'test-secret';
-const sign = (secret: string, ts: string, body: string) =>
-	createHmac('sha256', secret).update(`${ts}.${body}`).digest('hex');
-const now = () => String(Math.floor(Date.now() / 1000));
-
-test('valid signature passes', () => {
-	const ts = now();
-	const body = '{"hello":true}';
-	assert.ok(verifySignature(SECRET, ts, body, sign(SECRET, ts, body)));
+const active = 'synthetic-active-key';
+const pending = 'synthetic-pending-key';
+const timestamp = 1756728000;
+const limits = {
+	timeoutMs: 1000,
+	maxBodyBytes: 65536,
+	maxTreeNodes: 100,
+	maxTreeDepth: 8,
+	maxConcurrentRequests: 4,
+	maxCacheEntries: 8,
+	cacheTtlMs: 1000,
+};
+const sign = (key: string, raw: string) => createHmac('sha256', key).update(`${timestamp}.${raw}`).digest('hex');
+const delivery = (raw: string, key = active) => new Request('https://bot.invalid/webhook', {
+	method: 'POST',
+	headers: { 'x-dicechess-timestamp': String(timestamp), 'x-dicechess-signature': sign(key, raw) },
+	body: raw,
+});
+const handler = () => createBotWebhookHandler({ keys: { active, pending }, limits, now: () => timestamp * 1000 });
+const turn = (legalMoves: Record<string, unknown>, seat: 'White' | 'Black' = 'White') => JSON.stringify({
+	type: 'yourTurn',
+	gameId: 'synthetic-game',
+	seat,
+	state: {
+		version: 7,
+		dfen: '4k3/8/8/8/8/8/4P3/4K3 w - - 0 1 P',
+		activeSeat: seat,
+		dicePending: true,
+		clocks: null,
+		legalMoves,
+	},
 });
 
-test('tampered body fails', () => {
-	const ts = now();
-	const sig = sign(SECRET, ts, '{"hello":true}');
-	assert.equal(verifySignature(SECRET, ts, '{"hello":false}', sig), false);
-});
-
-test('stale timestamp fails', () => {
-	const ts = String(Math.floor(Date.now() / 1000) - 3600);
-	assert.equal(verifySignature(SECRET, ts, 'x', sign(SECRET, ts, 'x')), false);
-});
-
-test('missing pieces fail', () => {
-	assert.equal(verifySignature(SECRET, undefined, 'x', 'y'), false);
-	assert.equal(verifySignature(SECRET, 'not-a-number', 'x', 'y'), false);
-});
-
-test('verification echoes the nonce', async () => {
-	const raw = JSON.stringify({ type: 'verification', nonce: 'abc123' });
-	const { status, body } = await handleDelivery({}, raw, SECRET);
-	assert.equal(status, 200);
-	assert.deepEqual(body, { nonce: 'abc123' });
-});
-
-test('a signed turn returns a legal root-to-leaf path', async () => {
-	const tree: MoveTree = { e2e4: { g1f3: {}, b1c3: {} }, d2d4: { d4d5: {} } };
-	const raw = JSON.stringify({ type: 'yourTurn', gameId: 'g1', seat: 'White', state: { legalMoves: tree } });
-	const ts = now();
-	const headers = { [TIMESTAMP_HEADER]: ts, [SIGNATURE_HEADER]: sign(SECRET, ts, raw) };
-	const { status, body } = await handleDelivery(headers, raw, SECRET);
-	assert.equal(status, 200);
-	let node: MoveTree = tree;
-	for (const move of body.moves as string[]) {
-		assert.ok(move in node);
-		node = node[move];
+test('signed turn uses the existing random strategy and returns a complete legal path', async () => {
+	const tree = { e2e4: { g1f3: {}, b1c3: {} }, d2d4: { d4d5: {} } };
+	const result = await handler()(delivery(turn(tree)));
+	assert.equal(result.status, 200);
+	const { moves } = await result.json() as { moves: string[] };
+	let node: Record<string, unknown> = tree;
+	for (const move of moves) {
+		assert.ok(Object.hasOwn(node, move));
+		node = node[move] as Record<string, unknown>;
 	}
-	assert.deepEqual(node, {}, 'path must end at a leaf');
+	assert.deepEqual(node, {});
 });
 
-test('a bad signature is rejected', async () => {
-	const raw = JSON.stringify({ type: 'yourTurn', gameId: 'g1', seat: 'White', state: { legalMoves: {} } });
-	const headers = { [TIMESTAMP_HEADER]: now(), [SIGNATURE_HEADER]: 'deadbeef' };
-	const { status } = await handleDelivery(headers, raw, SECRET);
-	assert.equal(status, 401);
+test('bad signature and unsigned legacy registration cannot dispatch the strategy', async () => {
+	const raw = turn({ e2e3: {} });
+	const forged = new Request('https://bot.invalid/webhook', {
+		method: 'POST',
+		headers: { 'x-dicechess-timestamp': String(timestamp), 'x-dicechess-signature': '0'.repeat(64) },
+		body: raw,
+	});
+	const runtime = handler();
+	assert.equal((await runtime(forged)).status, 401);
+	const legacy = await runtime(new Request('https://bot.invalid/webhook', {
+		method: 'POST', body: JSON.stringify({ type: 'verification', nonce: 'legacy' }),
+	}));
+	assert.equal(legacy.status, 401);
 });
 
-test('contextFromEnvelope carries dfen, clocks, and the seat through — not just legalMoves', () => {
-	const envelope = {
-		seat: 'Black' as const,
-		state: {
-			dfen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 NBK',
-			clocks: { white: 295000, black: 300000 },
-			legalMoves: { e2e4: {} },
-		},
-	};
-	const ctx = contextFromEnvelope(envelope, { e2e4: {} });
-	assert.equal(ctx.dfen, envelope.state.dfen, 'the position must reach the strategy, not just the move tree');
-	assert.deepEqual(ctx.clocks, { white: 295000, black: 300000 }, 'remaining time must reach the strategy');
-	assert.equal(ctx.activeSeat, 'Black');
-	assert.deepEqual(ctx.legalMoves, { e2e4: {} });
+test('signed versionless wake probe is accepted without allowing unsigned registration', async () => {
+	const raw = JSON.stringify({ type: 'verification', nonce: 'wake-nonce' });
+	const runtime = handler();
+	const result = await runtime(delivery(raw));
+	assert.equal(result.status, 200);
+	assert.deepEqual(await result.json(), { nonce: 'wake-nonce' });
+	assert.equal((await runtime(new Request('https://bot.invalid/webhook', {
+		method: 'POST', body: raw,
+	}))).status, 401);
 });
 
-test('contextFromEnvelope defaults sensibly when state is missing (e.g. the fetched-tree fallback path)', () => {
-	const ctx = contextFromEnvelope({ seat: 'White' }, { d2d4: {} });
-	assert.equal(ctx.dfen, '');
-	assert.equal(ctx.clocks, null, 'Unlimited games (and missing data) must read as null, not throw');
-	assert.deepEqual(ctx.legalMoves, { d2d4: {} });
+test('pending key completes signed verification v2 and active key cannot impersonate it', async () => {
+	const nonce = Buffer.alloc(16, 1).toString('base64url');
+	const raw = JSON.stringify({ type: 'verification', version: 2, bot: { team: 'demo', name: 'starter' }, setupId: 'whs_test', revision: 'whrev_test', nonce });
+	const result = await handler()(delivery(raw, pending));
+	assert.equal(result.status, 200);
+	assert.deepEqual(await result.json(), {
+		nonce,
+		proof: createHmac('sha256', pending).update(`dicechess-webhook-activate-v2\n${raw}`).digest('hex'),
+	});
+	assert.equal((await handler()(delivery(raw, active))).status, 401);
+});
+
+test('runtime context maps seat-relative clock to the polling strategy shape', () => {
+	const legalMoves = { e7e6: {} };
+	assert.deepEqual(toStrategyContext({
+		gameId: 'g1', seat: 'Black', version: 7, dfen: 'synthetic dfen',
+		legalMoves, mayOfferDraw: false,
+		clock: { remainingMillis: 23000, opponentRemainingMillis: 12000, incrementMillis: 2000 },
+	}), { dfen: 'synthetic dfen', legalMoves, activeSeat: 'Black', clocks: { white: 12000, black: 23000 } });
+});
+
+test('empty active key is treated as unset when a pending key is configured', async () => {
+	const previousSecret = process.env.DICECHESS_WEBHOOK_SECRET;
+	const previousPending = process.env.DICECHESS_WEBHOOK_PENDING_KEY;
+	const previousLimits = process.env.DICECHESS_WEBHOOK_LIMITS;
+	try {
+		process.env.DICECHESS_WEBHOOK_SECRET = '';
+		process.env.DICECHESS_WEBHOOK_PENDING_KEY = pending;
+		process.env.DICECHESS_WEBHOOK_LIMITS = JSON.stringify(limits);
+		const raw = JSON.stringify({ type: 'verification', nonce: 'pending-wake' });
+		const currentStamp = String(Math.floor(Date.now() / 1000));
+		const request = new Request('https://bot.invalid/webhook', {
+			method: 'POST',
+			headers: {
+				'x-dicechess-timestamp': currentStamp,
+				'x-dicechess-signature': createHmac('sha256', pending).update(`${currentStamp}.${raw}`).digest('hex'),
+			},
+			body: raw,
+		});
+		const result = await configuredWebhookHandler()(request);
+		assert.equal(result.status, 200);
+		assert.deepEqual(await result.json(), { nonce: 'pending-wake' });
+	} finally {
+		if (previousSecret === undefined) delete process.env.DICECHESS_WEBHOOK_SECRET;
+		else process.env.DICECHESS_WEBHOOK_SECRET = previousSecret;
+		if (previousPending === undefined) delete process.env.DICECHESS_WEBHOOK_PENDING_KEY;
+		else process.env.DICECHESS_WEBHOOK_PENDING_KEY = previousPending;
+		if (previousLimits === undefined) delete process.env.DICECHESS_WEBHOOK_LIMITS;
+		else process.env.DICECHESS_WEBHOOK_LIMITS = previousLimits;
+	}
+});
+
+test('Node HTTP adapter preserves signed request bytes and runtime response', async () => {
+	const server = createServer((request, response) => void createNodeListener(handler())(request, response));
+	server.listen(0, '127.0.0.1');
+	await once(server, 'listening');
+	try {
+		const address = server.address();
+		assert.ok(address && typeof address !== 'string');
+		const raw = turn({ e2e3: {} });
+		const response = await fetch(`http://127.0.0.1:${address.port}/webhook`, {
+			method: 'POST',
+			headers: { 'x-dicechess-timestamp': String(timestamp), 'x-dicechess-signature': sign(active, raw) },
+			body: raw,
+		});
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { moves: ['e2e3'] });
+	} finally {
+		server.close();
+		await once(server, 'close');
+	}
+});
+
+test('Azure adapter preserves signed request bytes and returns the runtime response', async () => {
+	const previousSecret = process.env.DICECHESS_WEBHOOK_SECRET;
+	const previousLimits = process.env.DICECHESS_WEBHOOK_LIMITS;
+	try {
+		process.env.DICECHESS_WEBHOOK_SECRET = active;
+		process.env.DICECHESS_WEBHOOK_LIMITS = JSON.stringify(limits);
+		const raw = turn({ e2e3: {} });
+		const currentStamp = String(Math.floor(Date.now() / 1000));
+		const request = {
+			url: 'https://bot.invalid/api/webhook', method: 'POST',
+			headers: new Headers({ 'x-dicechess-timestamp': currentStamp,
+				'x-dicechess-signature': createHmac('sha256', active)
+					.update(`${currentStamp}.${raw}`).digest('hex') }),
+			body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(raw)); controller.close(); } }),
+		} as unknown as HttpRequest;
+		const result = await handleAzureWebhook(request, { warn: () => {} });
+		assert.equal(result.status, 200);
+		assert.deepEqual(JSON.parse(result.body as string), { moves: ['e2e3'] });
+	} finally {
+		if (previousSecret === undefined) delete process.env.DICECHESS_WEBHOOK_SECRET;
+		else process.env.DICECHESS_WEBHOOK_SECRET = previousSecret;
+		if (previousLimits === undefined) delete process.env.DICECHESS_WEBHOOK_LIMITS;
+		else process.env.DICECHESS_WEBHOOK_LIMITS = previousLimits;
+	}
+});
+
+test('Azure adapter applies the runtime body limit while streaming', async () => {
+	const previousSecret = process.env.DICECHESS_WEBHOOK_SECRET;
+	const previousLimits = process.env.DICECHESS_WEBHOOK_LIMITS;
+	try {
+		process.env.DICECHESS_WEBHOOK_SECRET = active;
+		process.env.DICECHESS_WEBHOOK_LIMITS = JSON.stringify({ ...limits, maxBodyBytes: 10 });
+		const raw = turn({ e2e3: {} });
+		const currentStamp = String(Math.floor(Date.now() / 1000));
+		const request = {
+			url: 'https://bot.invalid/api/webhook', method: 'POST',
+			headers: new Headers({ 'x-dicechess-timestamp': currentStamp,
+				'x-dicechess-signature': createHmac('sha256', active).update(`${currentStamp}.${raw}`).digest('hex') }),
+			body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(raw)); controller.close(); } }),
+		} as unknown as HttpRequest;
+		const result = await handleAzureWebhook(request, { warn: () => {} });
+		assert.equal(result.status, 413);
+	} finally {
+		if (previousSecret === undefined) delete process.env.DICECHESS_WEBHOOK_SECRET;
+		else process.env.DICECHESS_WEBHOOK_SECRET = previousSecret;
+		if (previousLimits === undefined) delete process.env.DICECHESS_WEBHOOK_LIMITS;
+		else process.env.DICECHESS_WEBHOOK_LIMITS = previousLimits;
+	}
 });

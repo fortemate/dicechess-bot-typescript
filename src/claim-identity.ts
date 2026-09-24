@@ -5,7 +5,7 @@
  *   npm run claim-identity -- <team> <name>
  *
  * This is the gateway to everything that needs a durable identity: the rating ladder
- * (`npm run ladder:join`) and webhooks (`npm run register --`). Both `team` and `name` are
+ * (`npm run ladder:join`) and owner-managed staged webhooks. Both `team` and `name` are
  * lowercase slugs (`[a-z0-9][a-z0-9-]*`), first-come-first-served. The printed token is shown
  * exactly once — store it as DICECHESS_TOKEN.
  */
