@@ -1,7 +1,7 @@
 /**
  * Thin, dependency-free transport client for the Dice Chess Bot API.
  *
- * Uses the built-in `fetch` (Node 20+) — no runtime dependencies. It wraps auth, the
+ * Uses the built-in `fetch` on supported Node releases. It wraps auth, the
  * REST endpoints, and the resilience patterns a real bot needs (retry with backoff,
  * `Retry-After` handling, and a hook to refresh the token on `401`). Game logic stays
  * out of here: your bot picks moves; this client just moves bytes.
@@ -17,7 +17,7 @@ export const USER_AGENT = 'dicechess-bot-typescript/1.0 (+https://github.com/for
 
 /** A prefix tree of UCI micro-moves; a leaf (`{}`) is a complete legal turn. */
 export interface MoveTree {
-	[move: string]: MoveTree;
+	readonly [move: string]: MoveTree;
 }
 
 export interface GameSummary {
@@ -164,15 +164,6 @@ export class BotClient {
 
 	async resign(gameId: string): Promise<void> {
 		await this.request('POST', `/bot/game/${gameId}/resign`);
-	}
-
-	/**
-	 * Register an HTTPS callback; returns `{ url, secret }`. The server runs an ownership
-	 * handshake (it POSTs a nonce to `url`, which your handler must echo — see webhook.ts).
-	 * Registered bots only; the `secret` is shown once — store it as DICECHESS_WEBHOOK_SECRET.
-	 */
-	registerWebhook(url: string): Promise<{ url: string; secret: string }> {
-		return this.request('POST', '/bot/webhook', { url }) as Promise<{ url: string; secret: string }>;
 	}
 
 	// ── transport ──────────────────────────────────────────────────────────────

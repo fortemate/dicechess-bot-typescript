@@ -1,12 +1,12 @@
 # Dice Chess Bot — TypeScript Starter — AI Agent Guidelines
 
 ## Architecture Overview
-- **Domain**: Minimal, dependency-free TypeScript starter template for building Dice Chess bots.
+- **Domain**: TypeScript starter template for Dice Chess bots; webhooks use the published JS runtime.
 - **Contract**: Uses pure wire protocol (HTTP/REST + Webhook HMAC) without requiring a game engine dependency.
-- **Runtimes**: Standalone polling bot, Node.js HTTP webhook server, or Azure Functions v4 serverless handler.
+- **Runtimes**: Standalone polling bot, Node.js HTTP webhook server, or Azure Functions v4 serverless handler. The runtime requires supported Node 22/24/26 releases.
 
 ## Developer Workflows
-- **Setup**: `npm install` (Node.js 20+, Node 26 recommended).
+- **Setup**: `npm install` (supported Node 22.23.3+, 24.21.0+, or 26.8.2+ within those majors).
 - **Tests**: `npm test` (runs Node.js test runner against `webhook.test.ts` and `strategy.test.ts`).
 - **Typecheck**: `npm run typecheck` (`tsc --noEmit`).
 - **Build**: `npm run build` (`tsc`).

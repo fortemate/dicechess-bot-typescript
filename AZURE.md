@@ -1,8 +1,8 @@
 # Deploying to Azure Functions
 
-This turns the starter into a pure serverless bot: Azure invokes `src/functions/webhook.ts`
-only when it's your turn, and your response body is the move. No server to keep running,
-no timer to schedule.
+Azure invokes `src/functions/webhook.ts` for signed Dice Chess webhook deliveries.
+It adapts the request to `@fortemate/dicechess-bot-runtime`; the existing
+`chooseMove` strategy selects the response. No server or timer is needed.
 
 The end state: a bot that opts into the rating ladder,
 gets automatically paired against other on-ladder bots, and shows up on the public
@@ -14,7 +14,9 @@ few dozen games) — with no server of your own to operate in the meantime.
 - An Azure subscription.
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) (`az`), logged in (`az login`).
 - [Azure Functions Core Tools v4](https://learn.microsoft.com/azure/azure-functions/functions-run-local) (`func`).
-- Node 20+ locally (for `npm install` / `npm run build`).
+- A supported Node release locally: 22.23.3+, 24.21.0+, or 26.8.2+ within that major.
+- A registered bot identity and access to its owner-managed staged webhook setup.
+- An active or pending webhook key and a JSON object of explicit runtime limits.
 
 :::note[Dormant or brand-new subscription?]
 If `az storage account create` (or any resource creation) fails with
@@ -80,9 +82,9 @@ func azure functionapp publish "$APP" --typescript
 to find a marker (e.g. no `local.settings.json` yet) and refuse to publish with "Can't
 determine project language from files" — passing the flag explicitly sidesteps that.
 
-At this point the function is **live** — but `DICECHESS_WEBHOOK_SECRET` isn't set yet. That's
-fine: the ownership-handshake request the play platform sends during registration doesn't need
-it (see `src/functions/webhook.ts`'s doc comment for why).
+At this point the function endpoint exists but answers 503 until a key and
+`DICECHESS_WEBHOOK_LIMITS` are configured. It does not echo unsigned verification
+nonces. An endpoint returning 503 is not ready for activation.
 
 ## 3. Claim a durable bot identity
 
@@ -94,27 +96,33 @@ npm run claim-identity -- <your-team> <your-bot-name>
 #  → DICECHESS_TOKEN=<token>              ← save this, shown once
 ```
 
-## 4. Register the webhook
+## 4. Stage and activate the webhook
 
-```bash
-DICECHESS_TOKEN=<token-from-step-3> npm run register -- "https://$APP.azurewebsites.net/api/webhook"
-#  → registered https://<app>.azurewebsites.net/api/webhook
-#  → DICECHESS_WEBHOOK_SECRET=<secret>    ← save this, shown once
-```
+Use the bot owner's staged webhook setup to create a candidate callback at
+`https://$APP.azurewebsites.net/api/webhook` and obtain its pending key. The older
+`POST /bot/webhook` helper used an unsigned nonce handshake and cannot activate
+this runtime; `npm run register` is intentionally unavailable.
 
-This only succeeds if step 2's deployment is already live — the server POSTs a verification
-nonce to the URL right now and expects it echoed back.
-
-## 5. Configure the secret and let the app restart
+Before activating, set the candidate key and resource limits as Azure App Settings:
 
 ```bash
 az functionapp config appsettings set \
   --name "$APP" --resource-group "$RG" \
-  --settings DICECHESS_WEBHOOK_SECRET=<secret-from-step-4>
+  --settings DICECHESS_WEBHOOK_PENDING_KEY=<pending-key> \
+             DICECHESS_WEBHOOK_LIMITS='<limits-json>'
 ```
 
-Azure restarts the app automatically when settings change (a few seconds). From now on every
-delivery is HMAC-verified.
+The limits JSON must contain positive integer `timeoutMs`, `maxBodyBytes`,
+`maxTreeNodes`, `maxTreeDepth`, `maxConcurrentRequests`, `maxCacheEntries`, and
+`cacheTtlMs`. Select deployment-specific values and confirm the app has restarted.
+Then use the owner setup to activate the callback. The server sends a signed
+verification v2 envelope; the runtime returns a proof bound to its exact bytes.
+After activation, set `DICECHESS_WEBHOOK_SECRET` to the active key. During a key
+rotation, retain the old active key alongside the new pending key until activation
+is complete, then remove the obsolete key. Do not log either key.
+
+The staged owner setup requires owner authentication. A registered bot API token
+alone does not perform that setup. This guide does not run an activation or deploy.
 
 ## 6. Join the ladder
 
