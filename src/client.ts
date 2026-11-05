@@ -86,6 +86,8 @@ export class BotClient {
 	token?: string;
 	private readonly maxRetries: number;
 	private readonly onUnauthorized?: (client: BotClient) => Promise<void>;
+	/** One in-flight token refresh shared by concurrent 401 responses. */
+	private refreshing: Promise<void> | null = null;
 
 	constructor(opts: BotClientOptions = {}) {
 		this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -177,10 +179,17 @@ export class BotClient {
 		return headers;
 	}
 
-	private async handleRetryableStatus(res: Response, attempt: number): Promise<boolean> {
+	private async handleRetryableStatus(res: Response, attempt: number, usedToken?: string): Promise<boolean> {
 		if (res.status === 401 && this.onUnauthorized && attempt <= this.maxRetries) {
-			console.warn('401 Unauthorized — refreshing token');
-			await this.onUnauthorized(this);
+			// Another request already replaced the rejected token: just retry with the new one.
+			if (this.token === usedToken) {
+				console.warn('401 Unauthorized — refreshing token');
+				const refresh = this.onUnauthorized;
+				this.refreshing ??= refresh(this).finally(() => {
+					this.refreshing = null;
+				});
+			}
+			await this.refreshing;
 			return true;
 		}
 		if (res.status === 429 && attempt <= this.maxRetries) {
@@ -199,6 +208,7 @@ export class BotClient {
 
 	private async request(method: string, path: string, body?: unknown, auth = true, attempt = 1): Promise<any> {
 		const url = `${this.baseUrl}${path}`;
+		const usedToken = this.token;
 		const headers = this.buildHeaders(body, auth);
 
 		let res: Response;
@@ -222,7 +232,7 @@ export class BotClient {
 		}
 
 		const detail = await res.text();
-		if (await this.handleRetryableStatus(res, attempt)) {
+		if (await this.handleRetryableStatus(res, attempt, usedToken)) {
 			return this.request(method, path, body, auth, attempt + 1);
 		}
 		throw new ApiError(res.status, detail);
