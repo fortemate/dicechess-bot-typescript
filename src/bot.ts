@@ -50,6 +50,34 @@ async function playTurn(client: BotClient, game: GameSummary, seeded: Set<string
 	}
 }
 
+const inFlight = new Set<string>();
+
+async function pollStep(client: BotClient, oppTeam: string, oppName: string, seeded: Set<string>): Promise<void> {
+	try {
+		const games = await client.myGames();
+		if (games.length === 0) {
+			// Activity loop: no live game → offer another challenge and wait for it.
+			await client.challenge(oppTeam, oppName);
+		} else {
+			const pendingGames = games.filter(
+				(g) => g.dicePending && g.activeSeat === g.seat && !inFlight.has(g.gameId),
+			);
+			await Promise.all(
+				pendingGames.map(async (game) => {
+					inFlight.add(game.gameId);
+					try {
+						await playTurn(client, game, seeded);
+					} finally {
+						inFlight.delete(game.gameId);
+					}
+				}),
+			);
+		}
+	} catch (e) {
+		console.warn(`loop error (continuing): ${(e as Error).message}`);
+	}
+}
+
 async function main(): Promise<void> {
 	const baseUrl = process.env.DICECHESS_BASE_URL ?? DEFAULT_BASE_URL;
 	const token = process.env.DICECHESS_TOKEN;
@@ -70,27 +98,20 @@ async function main(): Promise<void> {
 	const seeded = new Set<string>();
 	console.info(`bot ready — challenging ${opponent} and playing forever (Ctrl-C to stop)`);
 
-	for (;;) {
-		try {
-			const games = await client.myGames();
-			if (games.length === 0) {
-				// Activity loop: no live game → offer another challenge and wait for it.
-				await client.challenge(oppTeam, oppName);
-			} else {
-				for (const game of games) {
-					if (game.dicePending && game.activeSeat === game.seat) {
-						await playTurn(client, game, seeded);
-					}
-				}
-			}
-		} catch (e) {
-			console.warn(`loop error (continuing): ${(e as Error).message}`);
-		}
-		await sleep(pollMs);
-	}
+	const scheduleNext = () => {
+		setTimeout(() => {
+			void pollStep(client, oppTeam, oppName, seeded).finally(scheduleNext);
+		}, pollMs);
+	};
+
+	await pollStep(client, oppTeam, oppName, seeded);
+	scheduleNext();
+	await new Promise<never>(() => {});
 }
 
-main().catch((e) => {
+try {
+	await main();
+} catch (e) {
 	console.error(e);
 	process.exit(1);
-});
+}

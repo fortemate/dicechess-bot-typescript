@@ -15,6 +15,8 @@ export const DEFAULT_BASE_URL = 'https://api.fortemate.com';
 // reject unidentified clients (Cloudflare error 1010), so every request identifies itself.
 export const USER_AGENT = 'dicechess-bot-typescript/1.0 (+https://github.com/fortemate/dicechess-bot-typescript)';
 
+export const DEFAULT_TIME_CONTROL = Object.freeze({ Unlimited: {} });
+
 /** A prefix tree of UCI micro-moves; a leaf (`{}`) is a complete legal turn. */
 export interface MoveTree {
 	readonly [move: string]: MoveTree;
@@ -84,6 +86,8 @@ export class BotClient {
 	token?: string;
 	private readonly maxRetries: number;
 	private readonly onUnauthorized?: (client: BotClient) => Promise<void>;
+	/** One in-flight token refresh shared by concurrent 401 responses. */
+	private refreshing: Promise<void> | null = null;
 
 	constructor(opts: BotClientOptions = {}) {
 		this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
@@ -136,7 +140,7 @@ export class BotClient {
 
 	// ── challenges & games ────────────────────────────────────────────────────
 
-	challenge(team: string, name: string, timeControl: unknown = { Unlimited: {} }): Promise<unknown> {
+	challenge(team: string, name: string, timeControl: unknown = DEFAULT_TIME_CONTROL): Promise<unknown> {
 		return this.request('POST', '/bot/challenge', { team, name, timeControl });
 	}
 
@@ -168,52 +172,70 @@ export class BotClient {
 
 	// ── transport ──────────────────────────────────────────────────────────────
 
-	private async request(method: string, path: string, body?: unknown, auth = true): Promise<any> {
-		const url = `${this.baseUrl}${path}`;
-		for (let attempt = 1; ; attempt++) {
-			const headers: Record<string, string> = { 'User-Agent': USER_AGENT };
-			if (body !== undefined) headers['Content-Type'] = 'application/json';
-			if (auth && this.token) headers['Authorization'] = `Bearer ${this.token}`;
+	private buildHeaders(body?: unknown, auth = true): Record<string, string> {
+		const headers: Record<string, string> = { 'User-Agent': USER_AGENT };
+		if (body !== undefined) headers['Content-Type'] = 'application/json';
+		if (auth && this.token) headers['Authorization'] = `Bearer ${this.token}`;
+		return headers;
+	}
 
-			let res: Response;
-			try {
-				res = await fetch(url, {
-					method,
-					headers,
-					body: body !== undefined ? JSON.stringify(body) : undefined,
-				});
-			} catch (e) {
-				if (attempt <= this.maxRetries) {
-					await sleep(BotClient.backoff(attempt));
-					continue;
-				}
-				throw e;
-			}
-
-			if (res.ok) {
-				const text = await res.text();
-				return text ? JSON.parse(text) : {};
-			}
-
-			const detail = await res.text();
-			if (res.status === 401 && this.onUnauthorized && attempt <= this.maxRetries) {
+	private async handleRetryableStatus(res: Response, attempt: number, usedToken?: string): Promise<boolean> {
+		if (res.status === 401 && this.onUnauthorized && attempt <= this.maxRetries) {
+			// Another request already replaced the rejected token: just retry with the new one.
+			if (this.token === usedToken) {
 				console.warn('401 Unauthorized — refreshing token');
-				await this.onUnauthorized(this);
-				continue;
+				const refresh = this.onUnauthorized;
+				this.refreshing ??= refresh(this).finally(() => {
+					this.refreshing = null;
+				});
 			}
-			if (res.status === 429 && attempt <= this.maxRetries) {
-				const retryAfter = Number(res.headers.get('Retry-After')) * 1000 || BotClient.backoff(attempt);
-				console.warn(`429 Too Many Requests — retrying in ${retryAfter}ms`);
-				await sleep(retryAfter);
-				continue;
-			}
-			if (res.status >= 500 && res.status < 600 && attempt <= this.maxRetries) {
-				console.warn(`HTTP ${res.status} — retrying`);
-				await sleep(BotClient.backoff(attempt));
-				continue;
-			}
-			throw new ApiError(res.status, detail);
+			await this.refreshing;
+			return true;
 		}
+		if (res.status === 429 && attempt <= this.maxRetries) {
+			const retryAfter = Number(res.headers.get('Retry-After')) * 1000 || BotClient.backoff(attempt);
+			console.warn(`429 Too Many Requests — retrying in ${retryAfter}ms`);
+			await sleep(retryAfter);
+			return true;
+		}
+		if (res.status >= 500 && res.status < 600 && attempt <= this.maxRetries) {
+			console.warn(`HTTP ${res.status} — retrying`);
+			await sleep(BotClient.backoff(attempt));
+			return true;
+		}
+		return false;
+	}
+
+	private async request(method: string, path: string, body?: unknown, auth = true, attempt = 1): Promise<any> {
+		const url = `${this.baseUrl}${path}`;
+		const usedToken = this.token;
+		const headers = this.buildHeaders(body, auth);
+
+		let res: Response;
+		try {
+			res = await fetch(url, {
+				method,
+				headers,
+				body: body !== undefined ? JSON.stringify(body) : undefined,
+			});
+		} catch (e) {
+			if (attempt <= this.maxRetries) {
+				await sleep(BotClient.backoff(attempt));
+				return this.request(method, path, body, auth, attempt + 1);
+			}
+			throw e;
+		}
+
+		if (res.ok) {
+			const text = await res.text();
+			return text ? JSON.parse(text) : {};
+		}
+
+		const detail = await res.text();
+		if (await this.handleRetryableStatus(res, attempt, usedToken)) {
+			return this.request(method, path, body, auth, attempt + 1);
+		}
+		throw new ApiError(res.status, detail);
 	}
 
 	/** Exponential backoff capped at 30s: 1, 2, 4, 8, 16, 30, 30 … (ms). */

@@ -32,6 +32,7 @@ export interface TurnContext {
  * Shared by both the poll-only bot (`bot.ts`) and the webhook handler (`webhook.ts`).
  */
 export async function chooseMove(ctx: TurnContext): Promise<string[]> {
+	await Promise.resolve();
 	const path: string[] = [];
 	let node: MoveTree = ctx.legalMoves;
 	while (Object.keys(node).length > 0) {
